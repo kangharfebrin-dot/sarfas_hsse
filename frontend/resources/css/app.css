@@ -1,0 +1,70 @@
+@import 'tailwindcss';
+
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '../../storage/framework/views/*.php';
+@source '../views/**/*.blade.php';
+
+@theme {
+    --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    
+    --color-pertamina-red: #D71920;
+    --color-pertamina-red-hover: #b8141a;
+    --color-pertamina-red-light: #FEE2E2;
+
+    --color-corporate-blue: #00529B;
+    --color-corporate-blue-hover: #003e75;
+    --color-corporate-blue-light: #E0F2FE;
+
+    --color-corporate-green: #008B5A;
+    --color-corporate-green-hover: #007048;
+    --color-corporate-green-light: #DCFCE7;
+
+    --color-safety-orange: #F59E0B;
+    --color-safety-orange-light: #FEF3C7;
+
+    --color-critical-red: #DC2626;
+    --color-critical-red-light: #FEE2E2;
+
+    --color-slate-surface: #F8FAFC;
+    --color-slate-border: #E2E8F0;
+    --color-slate-text: #1F2937;
+    --color-slate-muted: #64748B;
+}
+
+/* Custom Utilities for enterprise HSSE theme */
+body {
+    background-color: #F5F7FA;
+    color: #1F2937;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar refinement */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: #F1F5F9;
+}
+::-webkit-scrollbar-thumb {
+    background: #CBD5E1;
+    border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #94A3B8;
+}
+
+/* Print utilities */
+@media print {
+    .no-print {
+        display: none !important;
+    }
+    body {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+    }
+    .print-only {
+        display: block !important;
+    }
+}
