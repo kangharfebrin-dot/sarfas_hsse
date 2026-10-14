@@ -81,6 +81,23 @@ const update = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Pengguna tidak ditemukan.' });
     }
 
+    // Protect Super Admin accounts from accidental deactivation or demotion
+    const superAdminRole = await db('roles').where('slug', 'super_admin').first();
+    if (superAdminRole && user.role_id === superAdminRole.id) {
+      if (is_active === false || is_active === 0 || is_active === '0') {
+        return res.status(400).json({
+          success: false,
+          message: 'Kebijakan Keamanan: Akun Super Admin tidak dapat dinonaktifkan.'
+        });
+      }
+      if (role_id && Number(role_id) !== superAdminRole.id) {
+        return res.status(400).json({
+          success: false,
+          message: 'Kebijakan Keamanan: Peran akun Super Admin tidak dapat diturunkan.'
+        });
+      }
+    }
+
     const updates = {
       ...(name && { name }),
       ...(role_id && { role_id }),

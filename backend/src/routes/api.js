@@ -39,9 +39,10 @@ router.post('/checklist-templates', authenticateToken, authorize(['super_admin',
 // 5. Inspection Endpoints
 router.get('/inspections', authenticateToken, inspectionController.list);
 router.get('/inspections/:id', authenticateToken, inspectionController.getOne);
-router.post('/inspections/draft', authenticateToken, inspectionController.saveDraft);
-router.post('/inspections/:id/draft', authenticateToken, inspectionController.saveDraft);
-router.post('/inspections/:id/submit', authenticateToken, inspectionController.submit);
+router.post('/inspections/draft', authenticateToken, authorize(['super_admin', 'admin_hsse', 'inspektor']), inspectionController.saveDraft);
+router.post('/inspections/:id/draft', authenticateToken, authorize(['super_admin', 'admin_hsse', 'inspektor']), inspectionController.saveDraft);
+router.put('/inspections/:id', authenticateToken, authorize(['super_admin', 'admin_hsse', 'inspektor']), inspectionController.saveDraft);
+router.post('/inspections/:id/submit', authenticateToken, authorize(['super_admin', 'admin_hsse', 'inspektor']), inspectionController.submit);
 router.post('/inspections/:id/review', authenticateToken, authorize(['super_admin', 'admin_hsse', 'approver']), inspectionController.review);
 
 // 6. Findings & Follow-up Endpoints
@@ -62,6 +63,7 @@ router.get('/reports/inspections', authenticateToken, reportController.getReport
 router.get('/users', authenticateToken, authorize(['super_admin', 'admin_hsse']), userController.list);
 router.post('/users', authenticateToken, authorize(['super_admin']), userController.create);
 router.patch('/users/:id', authenticateToken, authorize(['super_admin']), userController.update);
+router.put('/users/:id', authenticateToken, authorize(['super_admin']), userController.update);
 
 // 10. Audit Logs Endpoints
 router.get('/audit-logs', authenticateToken, authorize(['super_admin', 'admin_hsse']), auditLogController.list);

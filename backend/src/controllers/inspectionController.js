@@ -1,6 +1,55 @@
 const db = require('../config/db');
 const { logAudit } = require('../middleware/audit');
 
+const ALLOWED_ANSWERS = ['BAIK', 'TIDAK_BAIK', 'NA'];
+
+/**
+ * Calculate next inspection date accurately based on template frequency
+ */
+function calculateNextInspectionDate(baseDate, frequency) {
+  const d = new Date(baseDate);
+  switch (frequency) {
+    case 'HARIAN':
+      d.setDate(d.getDate() + 1);
+      break;
+    case 'MINGGUAN':
+      d.setDate(d.getDate() + 7);
+      break;
+    case 'BULANAN': {
+      const currentDay = d.getDate();
+      d.setMonth(d.getMonth() + 1);
+      // Handle end of month rollover (e.g. Jan 31 -> Feb 28)
+      if (d.getDate() < currentDay) {
+        d.setDate(0);
+      }
+      break;
+    }
+    case 'TRIWULAN': {
+      const currentDay = d.getDate();
+      d.setMonth(d.getMonth() + 3);
+      if (d.getDate() < currentDay) {
+        d.setDate(0);
+      }
+      break;
+    }
+    case 'SEMESTER': {
+      const currentDay = d.getDate();
+      d.setMonth(d.getMonth() + 6);
+      if (d.getDate() < currentDay) {
+        d.setDate(0);
+      }
+      break;
+    }
+    case 'TAHUNAN':
+      d.setFullYear(d.getFullYear() + 1);
+      break;
+    default:
+      d.setMonth(d.getMonth() + 1);
+      break;
+  }
+  return d;
+}
+
 const list = async (req, res, next) => {
   try {
     const { status, sarfas_id, inspector_id, start_date, end_date } = req.query;
@@ -23,14 +72,18 @@ const list = async (req, res, next) => {
         'verifier.name as verifier_name'
       );
 
+    // Role-based scoping: Inspectors see their own inspections unless elevated
+    if (req.user && req.user.role_slug === 'inspektor' && !inspector_id) {
+      query = query.where('inspections.inspector_id', req.user.id);
+    } else if (inspector_id) {
+      query = query.where('inspections.inspector_id', inspector_id);
+    }
+
     if (status) {
       query = query.where('inspections.status', status);
     }
     if (sarfas_id) {
       query = query.where('inspections.sarfas_id', sarfas_id);
-    }
-    if (inspector_id) {
-      query = query.where('inspections.inspector_id', inspector_id);
     }
     if (start_date) {
       query = query.where('inspections.inspection_date', '>=', start_date);
@@ -74,6 +127,7 @@ const getOne = async (req, res, next) => {
         'locations.name as location_name',
         'checklist_templates.title as template_title',
         'checklist_templates.version as template_version',
+        'checklist_templates.inspection_frequency',
         'inspector.name as inspector_name',
         'verifier.name as verifier_name'
       )
@@ -81,6 +135,18 @@ const getOne = async (req, res, next) => {
 
     if (!inspection) {
       return res.status(404).json({ success: false, message: 'Inspeksi tidak ditemukan.' });
+    }
+
+    // Ownership check on drafts: only creator or admin can view draft
+    if (
+      inspection.status === 'DRAFT' &&
+      req.user.role_slug === 'inspektor' &&
+      inspection.inspector_id !== req.user.id
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: 'Akses ditolak: Draft inspeksi ini milik petugas lain.'
+      });
     }
 
     // Answers with items & section info
@@ -128,9 +194,18 @@ const saveDraft = async (req, res, next) => {
     const inspectorId = req.user.id;
 
     let inspectionId = id;
+    let templateIdToCheck = template_id;
 
-    // Check if sarfas is active
-    if (sarfas_id) {
+    if (!inspectionId) {
+      if (!sarfas_id || !template_id) {
+        await trx.rollback();
+        return res.status(400).json({
+          success: false,
+          message: 'sarfas_id dan template_id wajib diisi untuk membuat draft inspeksi.'
+        });
+      }
+
+      // Check if sarfas is active
       const sarfas = await trx('sarfas_assets').where('id', sarfas_id).first();
       if (!sarfas || !sarfas.is_active) {
         await trx.rollback();
@@ -139,9 +214,7 @@ const saveDraft = async (req, res, next) => {
           message: 'Inspeksi tidak diizinkan pada sarfas non-aktif.'
         });
       }
-    }
 
-    if (!inspectionId) {
       // Create new draft
       const inspectionNo = `INSP-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(Date.now()).slice(-4)}`;
       const [newId] = await trx('inspections').insert({
@@ -162,10 +235,25 @@ const saveDraft = async (req, res, next) => {
         await trx.rollback();
         return res.status(404).json({ success: false, message: 'Inspeksi draft tidak ditemukan.' });
       }
+
+      // IDOR & Ownership Check
+      if (req.user.role_slug === 'inspektor' && existing.inspector_id !== req.user.id) {
+        await trx.rollback();
+        return res.status(403).json({
+          success: false,
+          message: 'Akses ditolak: Anda tidak memiliki wewenang untuk menyunting draft inspeksi petugas lain.'
+        });
+      }
+
       if (existing.status !== 'DRAFT') {
         await trx.rollback();
-        return res.status(400).json({ success: false, message: 'Hanya inspeksi berstatus DRAFT yang dapat disunting.' });
+        return res.status(400).json({
+          success: false,
+          message: 'Hanya inspeksi berstatus DRAFT yang dapat disunting.'
+        });
       }
+
+      templateIdToCheck = existing.template_id;
 
       await trx('inspections').where('id', inspectionId).update({
         general_notes: general_notes !== undefined ? general_notes : existing.general_notes,
@@ -173,10 +261,29 @@ const saveDraft = async (req, res, next) => {
       });
     }
 
-    // Save answers
+    // Validate and save answers
     if (answers && Array.isArray(answers)) {
+      // Query valid items that strictly belong to this template
+      const validTemplateItems = await trx('checklist_items')
+        .join('checklist_sections', 'checklist_items.section_id', 'checklist_sections.id')
+        .where('checklist_sections.template_id', templateIdToCheck)
+        .select('checklist_items.id');
+
+      const validItemIds = new Set(validTemplateItems.map(i => i.id));
+
       for (let ans of answers) {
         if (!ans.checklist_item_id) continue;
+
+        // Reject item that is not part of this template
+        if (!validItemIds.has(Number(ans.checklist_item_id))) {
+          await trx.rollback();
+          return res.status(400).json({
+            success: false,
+            message: `Validasi gagal: Item checklist ID ${ans.checklist_item_id} bukan merupakan bagian dari template inspeksi ini.`
+          });
+        }
+
+        const validAnswer = ALLOWED_ANSWERS.includes(ans.answer) ? ans.answer : 'BAIK';
 
         const existingAns = await trx('inspection_answers')
           .where('inspection_id', inspectionId)
@@ -187,7 +294,7 @@ const saveDraft = async (req, res, next) => {
           await trx('inspection_answers')
             .where('id', existingAns.id)
             .update({
-              answer: ans.answer || 'BAIK',
+              answer: validAnswer,
               notes: ans.notes || null,
               photo_url: ans.photo_url || null,
               risk_level: ans.risk_level || null,
@@ -197,7 +304,7 @@ const saveDraft = async (req, res, next) => {
           await trx('inspection_answers').insert({
             inspection_id: inspectionId,
             checklist_item_id: ans.checklist_item_id,
-            answer: ans.answer || 'BAIK',
+            answer: validAnswer,
             notes: ans.notes || null,
             photo_url: ans.photo_url || null,
             risk_level: ans.risk_level || null
@@ -212,7 +319,7 @@ const saveDraft = async (req, res, next) => {
     res.json({
       success: true,
       message: 'Draft inspeksi berhasil disimpan.',
-      data: { inspection_id: inspectionId }
+      data: { id: inspectionId, inspection_id: inspectionId, status: 'DRAFT' }
     });
   } catch (error) {
     await trx.rollback();
@@ -222,7 +329,8 @@ const saveDraft = async (req, res, next) => {
 
 /**
  * Submit Final Inspection
- * Validates completeness, updates sarfas last_inspection_date, and auto-generates findings for TIDAK_BAIK items
+ * Validates completeness, answers whitelist, required photos, notes for TIDAK_BAIK,
+ * updates sarfas last_inspection_date using template frequency, and auto-generates findings
  */
 const submit = async (req, res, next) => {
   const trx = await db.transaction();
@@ -237,6 +345,15 @@ const submit = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Inspeksi tidak ditemukan.' });
     }
 
+    // Ownership check: Inspectors can only submit their own inspections
+    if (req.user.role_slug === 'inspektor' && inspection.inspector_id !== inspectorId) {
+      await trx.rollback();
+      return res.status(403).json({
+        success: false,
+        message: 'Akses ditolak: Anda hanya dapat mengirimkan inspeksi yang Anda buat.'
+      });
+    }
+
     // Idempotency: Prevent double submit
     if (inspection.status !== 'DRAFT' && inspection.status !== 'SEDANG_BERLANGSUNG') {
       await trx.rollback();
@@ -246,15 +363,34 @@ const submit = async (req, res, next) => {
       });
     }
 
-    // Check all required checklist items
+    // Retrieve all required checklist items for this template
     const requiredItems = await trx('checklist_items')
       .join('checklist_sections', 'checklist_items.section_id', 'checklist_sections.id')
       .where('checklist_sections.template_id', inspection.template_id)
       .select('checklist_items.*');
 
+    const validItemMap = new Map(requiredItems.map(i => [i.id, i]));
+
     // Save / update answers if supplied in submit payload
     if (answers && Array.isArray(answers)) {
       for (let ans of answers) {
+        if (!validItemMap.has(Number(ans.checklist_item_id))) {
+          await trx.rollback();
+          return res.status(400).json({
+            success: false,
+            message: `Validasi gagal: Item checklist ID ${ans.checklist_item_id} bukan merupakan bagian dari template inspeksi ini.`
+          });
+        }
+
+        if (ans.answer && !ALLOWED_ANSWERS.includes(ans.answer)) {
+          await trx.rollback();
+          return res.status(400).json({
+            success: false,
+            message: `Nilai jawaban '${ans.answer}' tidak valid. Harus salah satu dari: ${ALLOWED_ANSWERS.join(', ')}.`
+          });
+        }
+
+        const validAnswer = ans.answer || 'BAIK';
         const existingAns = await trx('inspection_answers')
           .where('inspection_id', id)
           .where('checklist_item_id', ans.checklist_item_id)
@@ -262,7 +398,7 @@ const submit = async (req, res, next) => {
 
         if (existingAns) {
           await trx('inspection_answers').where('id', existingAns.id).update({
-            answer: ans.answer,
+            answer: validAnswer,
             notes: ans.notes || null,
             photo_url: ans.photo_url || null,
             risk_level: ans.risk_level || null,
@@ -272,7 +408,7 @@ const submit = async (req, res, next) => {
           await trx('inspection_answers').insert({
             inspection_id: id,
             checklist_item_id: ans.checklist_item_id,
-            answer: ans.answer,
+            answer: validAnswer,
             notes: ans.notes || null,
             photo_url: ans.photo_url || null,
             risk_level: ans.risk_level || null
@@ -287,6 +423,7 @@ const submit = async (req, res, next) => {
 
     const missingItems = [];
     const invalidItems = [];
+    const missingPhotoItems = [];
     let hasFailures = false;
     let hasCriticalFailures = false;
 
@@ -297,15 +434,27 @@ const submit = async (req, res, next) => {
         continue;
       }
 
+      if (!ALLOWED_ANSWERS.includes(recorded.answer)) {
+        invalidItems.push(`${item.item_code}: Nilai jawaban '${recorded.answer}' tidak valid.`);
+        continue;
+      }
+
+      // Condition TIDAK_BAIK requires explanatory notes
       if (recorded.answer === 'TIDAK_BAIK') {
         hasFailures = true;
         if (item.is_critical || recorded.risk_level === 'KRITIS') {
           hasCriticalFailures = true;
         }
 
-        // Rule: TIDAK_BAIK must have notes
-        if (!recorded.notes || recorded.notes.trim().length === 0) {
-          invalidItems.push(`${item.item_code}: Catatan ketidaksesuaian wajib diisi.`);
+        if (!recorded.notes || recorded.notes.trim().length < 5) {
+          invalidItems.push(`${item.item_code}: Catatan ketidaksesuaian wajib diisi minimal 5 karakter.`);
+        }
+      }
+
+      // Mandatory Photo Verification
+      if (item.requires_photo) {
+        if (!recorded.photo_url || recorded.photo_url.trim().length === 0) {
+          missingPhotoItems.push(`${item.item_code}: Item ini mewajibkan unggah bukti foto lapangan.`);
         }
       }
     }
@@ -323,8 +472,17 @@ const submit = async (req, res, next) => {
       await trx.rollback();
       return res.status(400).json({
         success: false,
-        message: 'Validasi kelengkapan gagal.',
+        message: 'Validasi kelengkapan inspeksi gagal.',
         errors: invalidItems
+      });
+    }
+
+    if (missingPhotoItems.length > 0) {
+      await trx.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Validasi bukti fisik gagal: Beberapa item wajib melampirkan foto.',
+        errors: missingPhotoItems
       });
     }
 
@@ -336,20 +494,24 @@ const submit = async (req, res, next) => {
       summaryCondition = 'PERLU_TINDAK_LANJUT';
     }
 
-    // Update inspection status to MENUNGGU_REVIEW (ready for approver) or SELESAI
+    // Retrieve template for accurate inspection frequency
+    const template = await trx('checklist_templates').where('id', inspection.template_id).first();
+    const frequency = template ? template.inspection_frequency : 'BULANAN';
+    const nextDate = calculateNextInspectionDate(inspection.inspection_date || new Date(), frequency);
+
+    // Update inspection status to MENUNGGU_REVIEW
     const finalStatus = 'MENUNGGU_REVIEW';
+    const signatureRecord = inspector_signature || `KONFIRMASI_DIGITAL_DEMO_${inspectorId}_${Date.now()}`;
+
     await trx('inspections').where('id', id).update({
       status: finalStatus,
       summary_condition: summaryCondition,
-      inspector_signature: inspector_signature || `Sig_${inspectorId}_${Date.now()}`,
+      inspector_signature: signatureRecord,
       general_notes: general_notes || inspection.general_notes,
       updated_at: db.fn.now()
     });
 
-    // Update sarfas asset condition and last_inspection_date
-    const nextDate = new Date();
-    nextDate.setDate(nextDate.getDate() + 30); // Next month inspection
-
+    // Update sarfas asset condition and next inspection date
     let assetCondition = 'BAIK';
     if (hasCriticalFailures) assetCondition = 'RUSAK_BERAT';
     else if (hasFailures) assetCondition = 'PERLU_PERHATIAN';
@@ -361,9 +523,21 @@ const submit = async (req, res, next) => {
       updated_at: db.fn.now()
     });
 
-    // Auto-create findings for TIDAK_BAIK items
+    // Auto-create findings for TIDAK_BAIK items idempotently
     const failedAnswers = recordedAnswers.filter(a => a.answer === 'TIDAK_BAIK');
+    let findingsCreated = 0;
+
     for (let fAns of failedAnswers) {
+      // Check if finding already exists for this inspection & item to avoid duplicates
+      const existingFinding = await trx('findings')
+        .where('inspection_id', id)
+        .where('checklist_item_id', fAns.checklist_item_id)
+        .first();
+
+      if (existingFinding) {
+        continue;
+      }
+
       const itemInfo = requiredItems.find(i => i.id === fAns.checklist_item_id);
       const findingNo = `FIND-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(Date.now()).slice(-4)}${Math.floor(Math.random() * 10)}`;
 
@@ -393,6 +567,8 @@ const submit = async (req, res, next) => {
         notes: `Temuan otomatis dibuat dari hasil submit inspeksi ${inspection.inspection_no}.`,
         photo_proof: fAns.photo_url || null
       });
+
+      findingsCreated++;
     }
 
     await trx.commit();
@@ -400,12 +576,13 @@ const submit = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Hasil inspeksi berhasil dikirim dan tercatat dalam sistem.',
+      message: 'Hasil inspeksi berhasil dikirim dan diverifikasi ke sistem HSSE.',
       data: {
         inspection_id: id,
         status: finalStatus,
         summary_condition: summaryCondition,
-        findings_created: failedAnswers.length
+        findings_created: findingsCreated,
+        next_inspection_date: nextDate.toISOString().split('T')[0]
       }
     });
   } catch (error) {
@@ -423,9 +600,23 @@ const review = async (req, res, next) => {
     const { action, verification_notes } = req.body; // 'APPROVE' or 'REJECT'
     const verifierId = req.user.id;
 
+    if (!action || !['APPROVE', 'REJECT'].includes(action)) {
+      return res.status(400).json({
+        success: false,
+        message: "Tindakan review tidak valid. Gunakan 'APPROVE' atau 'REJECT'."
+      });
+    }
+
     const inspection = await db('inspections').where('id', id).first();
     if (!inspection) {
       return res.status(404).json({ success: false, message: 'Inspeksi tidak ditemukan.' });
+    }
+
+    if (inspection.status === 'DRAFT') {
+      return res.status(400).json({
+        success: false,
+        message: 'Inspeksi berstatus DRAFT belum dapat di-review sebelum dikirim.'
+      });
     }
 
     const newStatus = action === 'APPROVE' ? 'SELESAI' : 'DITOLAK';
@@ -434,7 +625,7 @@ const review = async (req, res, next) => {
       status: newStatus,
       verified_by: verifierId,
       verified_at: db.fn.now(),
-      verification_notes: verification_notes || null,
+      verification_notes: verification_notes || (action === 'APPROVE' ? 'Hasil inspeksi disetujui.' : 'Hasil inspeksi dikembalikan/ditolak.'),
       updated_at: db.fn.now()
     });
 

@@ -12,6 +12,7 @@ use App\Http\Controllers\ReportController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\AuditLogController;
 use App\Http\Middleware\EnsureApiAuthenticated;
+use App\Http\Middleware\EnsureRole;
 
 // Redirect root to dashboard
 Route::get('/', function () {
@@ -31,43 +32,47 @@ Route::middleware([EnsureApiAuthenticated::class])->group(function () {
 
     // 2. Sarfas Assets
     Route::get('/sarfas', [SarfasController::class, 'index'])->name('sarfas.index');
-    Route::post('/sarfas', [SarfasController::class, 'store'])->name('sarfas.store');
+    Route::post('/sarfas', [SarfasController::class, 'store'])->name('sarfas.store')->middleware(EnsureRole::class . ':super_admin,admin_hsse');
     Route::get('/sarfas/{id}', [SarfasController::class, 'show'])->name('sarfas.show');
-    Route::match(['post', 'put', 'patch'], '/sarfas/{id}', [SarfasController::class, 'update'])->name('sarfas.update');
+    Route::match(['post', 'put', 'patch'], '/sarfas/{id}', [SarfasController::class, 'update'])->name('sarfas.update')->middleware(EnsureRole::class . ':super_admin,admin_hsse');
 
     // 3. Master Checklist Templates
     Route::get('/master-checklist', [ChecklistTemplateController::class, 'index'])->name('master-checklist.index');
-    Route::post('/master-checklist', [ChecklistTemplateController::class, 'store'])->name('master-checklist.store');
+    Route::post('/master-checklist', [ChecklistTemplateController::class, 'store'])->name('master-checklist.store')->middleware(EnsureRole::class . ':super_admin,admin_hsse');
     Route::get('/master-checklist/{id}', [ChecklistTemplateController::class, 'show'])->name('master-checklist.show');
 
     // 4. Checklist Inspections
     Route::get('/inspections', [InspectionController::class, 'index'])->name('inspections.index');
-    Route::get('/inspections/create', [InspectionController::class, 'create'])->name('inspections.create');
-    Route::get('/inspections/form/{id?}', [InspectionController::class, 'form'])->name('inspections.form');
-    Route::post('/inspections/draft/{id?}', [InspectionController::class, 'saveDraft'])->name('inspections.saveDraft');
-    Route::post('/inspections/{id}/submit', [InspectionController::class, 'submit'])->name('inspections.submit');
+    Route::get('/inspections/create', [InspectionController::class, 'create'])->name('inspections.create')->middleware(EnsureRole::class . ':super_admin,admin_hsse,inspektor');
+    Route::get('/inspections/form/{id?}', [InspectionController::class, 'form'])->name('inspections.form')->middleware(EnsureRole::class . ':super_admin,admin_hsse,inspektor');
+    Route::post('/inspections/draft/{id?}', [InspectionController::class, 'saveDraft'])->name('inspections.saveDraft')->middleware(EnsureRole::class . ':super_admin,admin_hsse,inspektor');
+    Route::post('/inspections/{id}/submit', [InspectionController::class, 'submit'])->name('inspections.submit')->middleware(EnsureRole::class . ':super_admin,admin_hsse,inspektor');
     Route::get('/inspections/{id}', [InspectionController::class, 'show'])->name('inspections.show');
-    Route::post('/inspections/{id}/review', [InspectionController::class, 'review'])->name('inspections.review');
+    Route::post('/inspections/{id}/review', [InspectionController::class, 'review'])->name('inspections.review')->middleware(EnsureRole::class . ':super_admin,admin_hsse,approver');
 
     // 5. Findings & Follow-up
     Route::get('/findings', [FindingController::class, 'index'])->name('findings.index');
     Route::get('/findings/{id}', [FindingController::class, 'show'])->name('findings.show');
     Route::post('/findings/{id}/action', [FindingController::class, 'updateAction'])->name('findings.updateAction');
-    Route::post('/findings/{id}/verify', [FindingController::class, 'verifyClose'])->name('findings.verifyClose');
+    Route::post('/findings/{id}/verify', [FindingController::class, 'verifyClose'])->name('findings.verifyClose')->middleware(EnsureRole::class . ':super_admin,admin_hsse,approver');
 
     // 6. Inspection Schedules
     Route::get('/schedules', [ScheduleController::class, 'index'])->name('schedules.index');
-    Route::post('/schedules', [ScheduleController::class, 'store'])->name('schedules.store');
+    Route::post('/schedules', [ScheduleController::class, 'store'])->name('schedules.store')->middleware(EnsureRole::class . ':super_admin,admin_hsse');
 
     // 7. Reports
     Route::get('/reports', [ReportController::class, 'index'])->name('reports.index');
     Route::get('/reports/export', [ReportController::class, 'export'])->name('reports.export');
 
-    // 8. User Management
-    Route::get('/users', [UserController::class, 'index'])->name('users.index');
-    Route::post('/users', [UserController::class, 'store'])->name('users.store');
-    Route::match(['post', 'put', 'patch'], '/users/{id}', [UserController::class, 'update'])->name('users.update');
+    // 8. User Management (Only Super Admin & Admin HSSE)
+    Route::middleware([EnsureRole::class . ':super_admin,admin_hsse'])->group(function () {
+        Route::get('/users', [UserController::class, 'index'])->name('users.index');
+        Route::post('/users', [UserController::class, 'store'])->name('users.store');
+        Route::match(['post', 'put', 'patch'], '/users/{id}', [UserController::class, 'update'])->name('users.update');
+    });
 
-    // 9. Audit Logs
-    Route::get('/audit-logs', [AuditLogController::class, 'index'])->name('audit-logs.index');
+    // 9. Audit Logs (Only Super Admin & Admin HSSE)
+    Route::middleware([EnsureRole::class . ':super_admin,admin_hsse'])->group(function () {
+        Route::get('/audit-logs', [AuditLogController::class, 'index'])->name('audit-logs.index');
+    });
 });

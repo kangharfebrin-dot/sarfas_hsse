@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
 const { logAudit } = require('../middleware/audit');
+const { revokeToken } = require('../middleware/auth');
 
 const login = async (req, res, next) => {
   try {
@@ -14,9 +15,12 @@ const login = async (req, res, next) => {
       });
     }
 
+    const cleanEmail = String(email).trim().toLowerCase();
+
+    // Query with innerJoin to ensure user has a valid, existing role
     const user = await db('users')
-      .leftJoin('roles', 'users.role_id', 'roles.id')
-      .where('users.email', email)
+      .innerJoin('roles', 'users.role_id', 'roles.id')
+      .where('users.email', cleanEmail)
       .select(
         'users.id',
         'users.name',
@@ -27,22 +31,23 @@ const login = async (req, res, next) => {
         'users.jabatan',
         'users.avatar',
         'users.is_active',
-        db.raw("COALESCE(roles.name, 'Pengguna') as role_name"),
-        db.raw("COALESCE(roles.slug, 'super_admin') as role_slug")
+        'roles.name as role_name',
+        'roles.slug as role_slug'
       )
       .first();
 
+    // Generic error message to prevent user enumeration
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Kredensial tidak valid: Akun tidak ditemukan.'
+        message: 'Email atau kata sandi tidak valid.'
       });
     }
 
     if (!user.is_active) {
       return res.status(403).json({
         success: false,
-        message: 'Akun Anda dinonaktifkan. Hubungi Administrator HSSE.'
+        message: 'Akun Anda telah dinonaktifkan. Silakan hubungi Administrator HSSE.'
       });
     }
 
@@ -50,11 +55,18 @@ const login = async (req, res, next) => {
     if (!isMatch) {
       return res.status(401).json({
         success: false,
-        message: 'Kredensial tidak valid: Password salah.'
+        message: 'Email atau kata sandi tidak valid.'
       });
     }
 
-    const secret = process.env.JWT_SECRET || 'pertamina_hsse_ft_maos_secret_token_jwt_2026';
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      return res.status(500).json({
+        success: false,
+        message: 'Konfigurasi keamanan server belum lengkap: JWT_SECRET tidak terdefinisi.'
+      });
+    }
+
     const token = jwt.sign(
       {
         id: user.id,
@@ -76,6 +88,7 @@ const login = async (req, res, next) => {
 
     // Remove password_hash from response
     delete user.password_hash;
+    user.role = user.role_slug;
 
     res.json({
       success: true,
@@ -101,6 +114,9 @@ const me = async (req, res, next) => {
 
 const logout = async (req, res, next) => {
   try {
+    if (req.token) {
+      revokeToken(req.token);
+    }
     if (req.user) {
       await logAudit(req, 'LOGOUT', 'AUTH', req.user.id, `User ${req.user.name} keluar sistem.`);
     }
@@ -113,18 +129,37 @@ const logout = async (req, res, next) => {
   }
 };
 
+/**
+ * Return only designated demo accounts when explicitly enabled
+ */
 const getDemoAccounts = async (req, res, next) => {
   try {
+    const isDemoAllowed = process.env.DEMO_MODE === 'true' && process.env.NODE_ENV !== 'production';
+    if (!isDemoAllowed) {
+      return res.status(403).json({
+        success: false,
+        message: 'Fitur akun demo dinonaktifkan pada lingkungan ini.'
+      });
+    }
+
+    const DEMO_EMAILS = [
+      'superadmin@pertamina.demo',
+      'admin.hsse@pertamina.demo',
+      'inspektor.maos@pertamina.demo',
+      'verifikator.hsse@pertamina.demo'
+    ];
+
     const users = await db('users')
-      .leftJoin('roles', 'users.role_id', 'roles.id')
+      .innerJoin('roles', 'users.role_id', 'roles.id')
+      .whereIn('users.email', DEMO_EMAILS)
       .where('users.is_active', true)
       .select(
         'users.id',
         'users.name',
         'users.email',
         'users.jabatan',
-        db.raw("COALESCE(roles.name, 'Pengguna') as role_name"),
-        db.raw("COALESCE(roles.slug, 'super_admin') as role_slug")
+        'roles.name as role_name',
+        'roles.slug as role_slug'
       );
 
     res.json({

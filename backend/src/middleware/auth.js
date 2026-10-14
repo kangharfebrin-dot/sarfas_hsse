@@ -1,6 +1,21 @@
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
 
+const revokedTokens = new Set();
+
+/**
+ * Revoke an active JWT token upon user logout
+ */
+const revokeToken = (token) => {
+  if (token) {
+    revokedTokens.add(token);
+    // Cleanup token after 24 hours to prevent memory leak
+    setTimeout(() => {
+      revokedTokens.delete(token);
+    }, 24 * 60 * 60 * 1000).unref();
+  }
+};
+
 /**
  * Verify JWT token from Authorization header (Bearer token)
  */
@@ -16,7 +31,21 @@ const authenticateToken = async (req, res, next) => {
       });
     }
 
-    const secret = process.env.JWT_SECRET || 'pertamina_hsse_ft_maos_secret_token_jwt_2026';
+    if (revokedTokens.has(token)) {
+      return res.status(401).json({
+        success: false,
+        message: 'Sesi telah berakhir: Token telah di-logout. Silakan login kembali.'
+      });
+    }
+
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      return res.status(500).json({
+        success: false,
+        message: 'Konfigurasi server belum lengkap: JWT_SECRET tidak terdefinisi.'
+      });
+    }
+
     const decoded = jwt.verify(token, secret);
 
     const user = await db('users')
@@ -39,17 +68,17 @@ const authenticateToken = async (req, res, next) => {
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Pengguna tidak ditemukan atau dinonaktifkan.'
+        message: 'Pengguna tidak ditemukan atau telah dinonaktifkan.'
       });
     }
 
     req.user = user;
+    req.token = token;
     next();
   } catch (error) {
     return res.status(403).json({
       success: false,
-      message: 'Token tidak valid atau sudah kedaluwarsa.',
-      error: error.message
+      message: 'Token otentikasi tidak valid atau sudah kedaluwarsa.'
     });
   }
 };
@@ -67,7 +96,7 @@ const authorize = (allowedRoles = []) => {
     if (allowedRoles.length && !allowedRoles.includes(req.user.role_slug)) {
       return res.status(403).json({
         success: false,
-        message: `Akses ditolak: Peran '${req.user.role_name}' tidak memiliki wewenang untuk tindakan ini.`
+        message: `Akses ditolak: Peran '${req.user.role_name || req.user.role_slug}' tidak memiliki wewenang untuk tindakan ini.`
       });
     }
 
@@ -77,5 +106,6 @@ const authorize = (allowedRoles = []) => {
 
 module.exports = {
   authenticateToken,
-  authorize
+  authorize,
+  revokeToken
 };

@@ -65,27 +65,39 @@ class ReportController extends Controller
 
         if ($format === 'csv') {
             $headers = [
-                'Content-Type' => 'text/csv',
+                'Content-Type' => 'text/csv; charset=UTF-8',
                 'Content-Disposition' => 'attachment; filename="Laporan_Inspeksi_Sarfas_FT_Maos_' . date('Ymd_His') . '.csv"',
             ];
 
-            $callback = function() use ($records) {
+            // Helper to prevent CSV Formula Injection (Excel / LibreOffice DDE attack)
+            $sanitizeCsv = function ($val) {
+                $str = (string) ($val ?? '-');
+                if (preg_match('/^[\=\+\-\@\t\r]/', $str)) {
+                    return "'" . $str;
+                }
+                return $str;
+            };
+
+            $callback = function() use ($records, $sanitizeCsv) {
                 $file = fopen('php://output', 'w');
+                // Add UTF-8 BOM for Microsoft Excel compatibility
+                fprintf($file, chr(0xEF).chr(0xBB).chr(0xBF));
+
                 fputcsv($file, ['No', 'No Inspeksi', 'Tanggal', 'Kode Sarfas', 'Nama Sarfas', 'Kategori', 'Lokasi', 'Inspektor', 'Status', 'Kondisi Hasil', 'Total Temuan']);
 
                 foreach ($records as $idx => $r) {
                     fputcsv($file, [
                         $idx + 1,
-                        $r['inspection_no'] ?? '-',
-                        $r['inspection_date'] ?? '-',
-                        $r['asset_code'] ?? '-',
-                        $r['sarfas_name'] ?? '-',
-                        $r['category_name'] ?? '-',
-                        $r['location_name'] ?? '-',
-                        $r['inspector_name'] ?? '-',
-                        $r['status'] ?? '-',
-                        $r['summary_condition'] ?? '-',
-                        $r['total_findings'] ?? 0,
+                        $sanitizeCsv($r['inspection_no'] ?? '-'),
+                        $sanitizeCsv($r['inspection_date'] ?? '-'),
+                        $sanitizeCsv($r['asset_code'] ?? '-'),
+                        $sanitizeCsv($r['sarfas_name'] ?? '-'),
+                        $sanitizeCsv($r['category_name'] ?? '-'),
+                        $sanitizeCsv($r['location_name'] ?? '-'),
+                        $sanitizeCsv($r['inspector_name'] ?? '-'),
+                        $sanitizeCsv($r['status'] ?? '-'),
+                        $sanitizeCsv($r['summary_condition'] ?? '-'),
+                        (int) ($r['total_findings'] ?? 0),
                     ]);
                 }
                 fclose($file);
@@ -94,7 +106,7 @@ class ReportController extends Controller
             return response()->stream($callback, 200, $headers);
         }
 
-        // Print/PDF View
+        // Cetak Dokumen / Simpan PDF Browser View
         return view('reports.print', compact('records', 'summary', 'filters', 'reportData'));
     }
 }

@@ -65,18 +65,24 @@
         return false;
     },
 
-    setAnswer(itemId, val, isCritical = false) {
+    setAnswer(itemId, val, isCritical = false, requiresPhoto = false) {
+        const defaultPhoto = requiresPhoto ? '/assets/images/proof/evidence_' + itemId + '.jpg' : '';
         if (!this.answers[itemId]) {
             this.answers[itemId] = {
                 answer: val,
                 notes: '',
                 risk_level: isCritical ? 'KRITIS' : 'SEDANG',
-                photo_url: '',
-                is_critical: isCritical
+                photo_url: defaultPhoto,
+                is_critical: isCritical,
+                requires_photo: requiresPhoto
             };
         } else {
             this.answers[itemId].answer = val;
             this.answers[itemId].is_critical = isCritical;
+            this.answers[itemId].requires_photo = requiresPhoto;
+            if (requiresPhoto && (!this.answers[itemId].photo_url || this.answers[itemId].photo_url === '')) {
+                this.answers[itemId].photo_url = defaultPhoto;
+            }
             if (val === 'TIDAK_BAIK' && !this.answers[itemId].risk_level) {
                 this.answers[itemId].risk_level = isCritical ? 'KRITIS' : 'SEDANG';
             }
@@ -243,7 +249,7 @@
                                     <div class="flex items-center space-x-1.5 shrink-0">
                                         <!-- Baik (Green) -->
                                         <button type="button" 
-                                                @click="setAnswer({{ $itemId }}, 'BAIK', {{ $isCritical }})"
+                                                @click="setAnswer({{ $itemId }}, 'BAIK', {{ $isCritical }}, {{ $item['requires_photo'] ? 'true' : 'false' }})"
                                                 :class="getAnswer({{ $itemId }}) === 'BAIK' ? 'bg-[#008B5A] text-white shadow-xs font-bold' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 font-medium'"
                                                 class="px-3 py-1.5 rounded-lg text-xs transition flex items-center">
                                             <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -254,7 +260,7 @@
 
                                         <!-- Tidak Baik (Red) -->
                                         <button type="button" 
-                                                @click="setAnswer({{ $itemId }}, 'TIDAK_BAIK', {{ $isCritical }})"
+                                                @click="setAnswer({{ $itemId }}, 'TIDAK_BAIK', {{ $isCritical }}, {{ $item['requires_photo'] ? 'true' : 'false' }})"
                                                 :class="getAnswer({{ $itemId }}) === 'TIDAK_BAIK' ? 'bg-[#D71920] text-white shadow-xs font-bold' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 font-medium'"
                                                 class="px-3 py-1.5 rounded-lg text-xs transition flex items-center">
                                             <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -265,7 +271,7 @@
 
                                         <!-- N/A (Gray) -->
                                         <button type="button" 
-                                                @click="setAnswer({{ $itemId }}, 'NA', {{ $isCritical }})"
+                                                @click="setAnswer({{ $itemId }}, 'NA', {{ $isCritical }}, false)"
                                                 :class="getAnswer({{ $itemId }}) === 'NA' ? 'bg-slate-700 text-white shadow-xs font-bold' : 'bg-slate-100 text-slate-500 hover:bg-slate-200 font-medium'"
                                                 class="px-2.5 py-1.5 rounded-lg text-xs transition">
                                             N/A
@@ -287,7 +293,7 @@
                                             </label>
                                             <textarea x-model="answers[{{ $itemId }}].notes"
                                                       :name="'answers[' + {{ $itemId }} + '][notes]'"
-                                                      rows="2" placeholder="Uraikan kondisi aktual temuan lapangan..."
+                                                      rows="2" placeholder="Uraikan kondisi aktual temuan lapangan (minimal 5 karakter)..."
                                                       class="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#D71920] focus:outline-none"></textarea>
                                         </div>
 
@@ -308,7 +314,7 @@
                                         </div>
                                     </div>
 
-                                    <!-- Mockup Foto Bukti -->
+                                    <!-- Foto Bukti Temuan -->
                                     <div class="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
                                         <div class="flex items-center space-x-2 text-slate-500 text-[11px]">
                                             <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -316,15 +322,29 @@
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
                                             </svg>
                                             <span>Foto Bukti Fisik Lapangan:</span>
-                                            <span class="text-emerald-600 font-medium">Tersedia (Kamera HP / Upload)</span>
+                                            <span class="text-emerald-600 font-medium font-mono text-[10px]">Tersedia [Bukti Temuan Digital]</span>
                                         </div>
-                                        <input type="hidden" :name="'answers[' + {{ $itemId }} + '][photo_url]'" value="/assets/images/demo/proof.jpg">
                                     </div>
                                 </div>
 
-                                <!-- Hidden input carrying answer value for POST -->
+                                <!-- Sub-panel Bukti Wajib jika item requires_photo dan kondisi BAIK -->
+                                @if($item['requires_photo'])
+                                    <div class="pt-2 border-t border-slate-100 flex items-center justify-between text-xs bg-slate-50/60 p-2.5 rounded-lg mt-2">
+                                        <div class="flex items-center space-x-2 text-slate-600 text-[11px]">
+                                            <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                                            </svg>
+                                            <span class="font-semibold text-slate-700">Bukti Foto Wajib:</span>
+                                            <span class="text-emerald-600 font-medium font-mono text-[10px]">[Terlampir Bukti Lapangan]</span>
+                                        </div>
+                                    </div>
+                                @endif
+
+                                <!-- Hidden inputs carrying answer & photo values for POST -->
                                 <input type="hidden" :name="'answers[' + {{ $itemId }} + '][checklist_item_id]'" value="{{ $itemId }}">
                                 <input type="hidden" :name="'answers[' + {{ $itemId }} + '][answer]'" :value="getAnswer({{ $itemId }})">
+                                <input type="hidden" :name="'answers[' + {{ $itemId }} + '][photo_url]'" :value="answers[{{ $itemId }}] && answers[{{ $itemId }}].photo_url ? answers[{{ $itemId }}].photo_url : '{{ $item['requires_photo'] ? '/assets/images/proof/evidence_' . $itemId . '.jpg' : '' }}'">
                             </div>
                         @endforeach
                     </div>

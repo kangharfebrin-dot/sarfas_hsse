@@ -3,7 +3,7 @@ const { logAudit } = require('../middleware/audit');
 
 const list = async (req, res, next) => {
   try {
-    const { status, risk_level, sarfas_id, search } = req.query;
+    const { status, risk_level, sarfas_id, search, assigned_to } = req.query;
 
     let query = db('findings')
       .join('sarfas_assets', 'findings.sarfas_id', 'sarfas_assets.id')
@@ -18,8 +18,12 @@ const list = async (req, res, next) => {
         'locations.name as location_name',
         'reporter.name as reported_by_name',
         'assigned.name as assigned_to_name',
-        'verifier.name as verified_by_name'
+        'verifier.name as verifier_name'
       );
+
+    if (assigned_to) {
+      query = query.where('findings.assigned_to', assigned_to);
+    }
 
     if (status) {
       if (status === 'OPEN') {
@@ -82,7 +86,7 @@ const getOne = async (req, res, next) => {
         'locations.name as location_name',
         'reporter.name as reported_by_name',
         'assigned.name as assigned_to_name',
-        'verifier.name as verified_by_name',
+        'verifier.name as verifier_name',
         'checklist_items.item_code',
         'checklist_items.question_text'
       )
@@ -115,7 +119,7 @@ const getOne = async (req, res, next) => {
 };
 
 /**
- * Update Corrective Action / Progress
+ * Update Corrective Action / Progress with ownership & role validation
  */
 const updateAction = async (req, res, next) => {
   const trx = await db.transaction();
@@ -130,7 +134,9 @@ const updateAction = async (req, res, next) => {
       photo_after,
       action_note
     } = req.body;
-    const userId = req.user.id;
+    const user = req.user;
+    const userId = user.id;
+    const userRole = user.role_slug;
 
     const finding = await trx('findings').where('id', id).first();
     if (!finding) {
@@ -140,15 +146,50 @@ const updateAction = async (req, res, next) => {
 
     if (finding.status === 'SELESAI') {
       await trx.rollback();
-      return res.status(400).json({ success: false, message: 'Temuan yang telah berstatus SELESAI tidak dapat diubah lagi.' });
+      return res.status(400).json({
+        success: false,
+        message: 'Temuan yang telah berstatus SELESAI tidak dapat diubah lagi.'
+      });
+    }
+
+    // Authorization & Ownership check:
+    // Only super_admin, admin_hsse, approver, or the assigned user / reporter may update action
+    const isAdmin = ['super_admin', 'admin_hsse'].includes(userRole);
+    const isApprover = userRole === 'approver';
+    const isAssigned = finding.assigned_to && Number(finding.assigned_to) === userId;
+    const isReporter = finding.reported_by && Number(finding.reported_by) === userId;
+
+    if (!isAdmin && !isApprover && !isAssigned && !isReporter) {
+      await trx.rollback();
+      return res.status(403).json({
+        success: false,
+        message: 'Akses ditolak: Anda tidak memiliki wewenang untuk memperbarui progres temuan ini.'
+      });
+    }
+
+    // Changing assigned_to or due_date is privileged to Admin HSSE / Super Admin only
+    if (assigned_to !== undefined && Number(assigned_to) !== finding.assigned_to && !isAdmin) {
+      await trx.rollback();
+      return res.status(403).json({
+        success: false,
+        message: 'Akses ditolak: Hanya Admin HSSE atau Super Admin yang dapat menugaskan penanggung jawab temuan.'
+      });
+    }
+
+    if (due_date !== undefined && due_date !== finding.due_date && !isAdmin) {
+      await trx.rollback();
+      return res.status(403).json({
+        success: false,
+        message: 'Akses ditolak: Hanya Admin HSSE atau Super Admin yang dapat mengubah batas waktu (due date) temuan.'
+      });
     }
 
     const updates = {
       updated_at: db.fn.now()
     };
 
-    if (assigned_to !== undefined) updates.assigned_to = assigned_to;
-    if (due_date !== undefined) updates.due_date = due_date;
+    if (isAdmin && assigned_to !== undefined) updates.assigned_to = assigned_to || null;
+    if (isAdmin && due_date !== undefined) updates.due_date = due_date;
     if (corrective_action_plan !== undefined) updates.corrective_action_plan = corrective_action_plan;
     if (corrective_action_notes !== undefined) updates.corrective_action_notes = corrective_action_notes;
     if (photo_after !== undefined) updates.photo_after = photo_after;
@@ -161,7 +202,7 @@ const updateAction = async (req, res, next) => {
     // Record action log
     let actionType = 'IN_PROGRESS';
     if (status === 'MENUNGGU_VERIFIKASI') actionType = 'SUBMITTED_RESOLUTION';
-    else if (assigned_to && assigned_to !== finding.assigned_to) actionType = 'ASSIGNED';
+    else if (assigned_to && Number(assigned_to) !== finding.assigned_to) actionType = 'ASSIGNED';
 
     await trx('finding_actions').insert({
       finding_id: id,
@@ -172,7 +213,13 @@ const updateAction = async (req, res, next) => {
     });
 
     await trx.commit();
-    await logAudit(req, 'UPDATE_FINDING_ACTION', 'TEMUAN', id, `Memperbarui progres temuan ${finding.finding_no} -> ${updates.status || finding.status}`);
+    await logAudit(
+      req,
+      'UPDATE_FINDING_ACTION',
+      'TEMUAN',
+      id,
+      `Memperbarui progres temuan ${finding.finding_no} -> ${updates.status || finding.status}`
+    );
 
     res.json({
       success: true,
@@ -194,6 +241,23 @@ const verifyClose = async (req, res, next) => {
     const { id } = req.params;
     const { action, verification_notes, photo_proof } = req.body; // 'VERIFY_CLOSE' or 'REJECT'
     const verifierId = req.user.id;
+    const userRole = req.user.role_slug;
+
+    if (!['super_admin', 'admin_hsse', 'approver'].includes(userRole)) {
+      await trx.rollback();
+      return res.status(403).json({
+        success: false,
+        message: 'Akses ditolak: Anda tidak memiliki wewenang untuk memverifikasi temuan.'
+      });
+    }
+
+    if (!action || !['VERIFY_CLOSE', 'REJECT'].includes(action)) {
+      await trx.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Tindakan verifikasi tidak valid. Gunakan 'VERIFY_CLOSE' atau 'REJECT'."
+      });
+    }
 
     const finding = await trx('findings').where('id', id).first();
     if (!finding) {

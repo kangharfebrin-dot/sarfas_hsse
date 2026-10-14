@@ -28,11 +28,89 @@ class ExpressApiService
      */
     protected function client()
     {
-        $client = Http::timeout(6)->acceptJson();
+        $client = Http::timeout(8)->acceptJson();
         if ($token = $this->getToken()) {
             $client = $client->withToken($token);
         }
         return $client;
+    }
+
+    /**
+     * Standardize response from Express API
+     */
+    protected function handleMutationResponse($response, string $defaultFallbackMsg = 'Operasi gagal diproses'): array
+    {
+        $statusCode = $response->status();
+        $body = $response->json();
+
+        if ($response->successful()) {
+            return $body ?? ['success' => true, 'message' => 'Berhasil'];
+        }
+
+        // Handle Token Expiry or Invalidation
+        if ($statusCode === 401) {
+            Session::forget(['jwt_token', 'auth_user']);
+            return [
+                'success' => false,
+                'status_code' => 401,
+                'message' => $body['message'] ?? 'Sesi autentikasi telah berakhir. Silakan login kembali.'
+            ];
+        }
+
+        // Handle Forbidden
+        if ($statusCode === 403) {
+            return [
+                'success' => false,
+                'status_code' => 403,
+                'message' => $body['message'] ?? 'Akses ditolak: Anda tidak memiliki hak wewenang untuk tindakan ini.'
+            ];
+        }
+
+        // Handle Validation or Bad Request
+        if ($statusCode === 400 || $statusCode === 422) {
+            $msg = $body['message'] ?? $defaultFallbackMsg;
+            if (!empty($body['errors']) && is_array($body['errors'])) {
+                $msg .= ' (' . implode('; ', array_slice($body['errors'], 0, 3)) . ')';
+            }
+            return [
+                'success' => false,
+                'status_code' => $statusCode,
+                'message' => $msg,
+                'errors' => $body['errors'] ?? null
+            ];
+        }
+
+        // Handle Rate Limiter
+        if ($statusCode === 429) {
+            return [
+                'success' => false,
+                'status_code' => 429,
+                'message' => 'Terlalu banyak permintaan ke backend API. Harap tunggu beberapa saat.'
+            ];
+        }
+
+        return [
+            'success' => false,
+            'status_code' => $statusCode,
+            'message' => $body['message'] ?? $defaultFallbackMsg
+        ];
+    }
+
+    /**
+     * Check backend health status
+     */
+    public function checkHealth(): array
+    {
+        try {
+            $healthUrl = preg_replace('/\/api\/v1$/', '', $this->baseUrl) . '/health';
+            $response = Http::timeout(4)->acceptJson()->get($healthUrl);
+            if ($response->successful()) {
+                return ['status' => 'healthy', 'data' => $response->json()];
+            }
+            return ['status' => 'unhealthy', 'message' => 'Status kode backend: ' . $response->status()];
+        } catch (\Exception $e) {
+            return ['status' => 'offline', 'message' => 'Backend offline: ' . $e->getMessage()];
+        }
     }
 
     /**
@@ -41,7 +119,7 @@ class ExpressApiService
     public function login(string $email, string $password): array
     {
         try {
-            $response = Http::timeout(6)->post("{$this->baseUrl}/auth/login", [
+            $response = Http::timeout(8)->acceptJson()->post("{$this->baseUrl}/auth/login", [
                 'email' => $email,
                 'password' => $password,
             ]);
@@ -61,13 +139,13 @@ class ExpressApiService
             Log::warning('Express API connection failed on login: ' . $e->getMessage());
             return [
                 'success' => false,
-                'message' => 'Gagal terhubung ke backend Express API (Port 3001). Pastikan backend aktif.'
+                'message' => 'Gagal terhubung ke backend Express API (Port 3001). Pastikan service backend aktif.'
             ];
         }
     }
 
     /**
-     * Logout and destroy session
+     * Logout and revoke session
      */
     public function logout(): void
     {
@@ -93,16 +171,10 @@ class ExpressApiService
                 return $response->json('data') ?? [];
             }
         } catch (\Exception $e) {
-            Log::info('Express API unreachable for demo accounts, returning fallback.');
+            Log::info('Express API unreachable for demo accounts.');
         }
 
-        // Fallback demo accounts if server offline
-        return [
-            ['name' => 'Budi Santoso (Demo)', 'email' => 'superadmin@pertamina.demo', 'role_name' => 'Super Admin', 'role_slug' => 'super_admin', 'default_password' => 'password123'],
-            ['name' => 'Raden Harfebrin (Demo)', 'email' => 'admin.hsse@pertamina.demo', 'role_name' => 'Admin HSSE', 'role_slug' => 'admin_hsse', 'default_password' => 'password123'],
-            ['name' => 'Eko Prasetyo (Demo)', 'email' => 'inspektor.maos@pertamina.demo', 'role_name' => 'Inspektor Lapangan', 'role_slug' => 'inspektor', 'default_password' => 'password123'],
-            ['name' => 'Dwi Cahyono (Demo)', 'email' => 'verifikator.hsse@pertamina.demo', 'role_name' => 'Approver / Verifikator', 'role_slug' => 'approver', 'default_password' => 'password123'],
-        ];
+        return [];
     }
 
     /**
@@ -114,6 +186,9 @@ class ExpressApiService
             $response = $this->client()->get("{$this->baseUrl}/dashboard/summary");
             if ($response->successful()) {
                 return $response->json('data') ?? [];
+            }
+            if ($response->status() === 401) {
+                Session::forget(['jwt_token', 'auth_user']);
             }
         } catch (\Exception $e) {
             Log::warning('Express API dashboard summary error: ' . $e->getMessage());
@@ -192,7 +267,7 @@ class ExpressApiService
     {
         try {
             $response = $this->client()->post("{$this->baseUrl}/sarfas", $data);
-            return $response->json() ?? ['success' => false, 'message' => 'Terjadi kesalahan sistem.'];
+            return $this->handleMutationResponse($response, 'Gagal menambahkan sarfas.');
         } catch (\Exception $e) {
             return ['success' => false, 'message' => 'Koneksi ke backend gagal: ' . $e->getMessage()];
         }
@@ -205,7 +280,7 @@ class ExpressApiService
     {
         try {
             $response = $this->client()->patch("{$this->baseUrl}/sarfas/{$id}", $data);
-            return $response->json() ?? ['success' => false, 'message' => 'Terjadi kesalahan sistem.'];
+            return $this->handleMutationResponse($response, 'Gagal memperbarui sarfas.');
         } catch (\Exception $e) {
             return ['success' => false, 'message' => 'Koneksi ke backend gagal: ' . $e->getMessage()];
         }
@@ -250,9 +325,9 @@ class ExpressApiService
     {
         try {
             $response = $this->client()->post("{$this->baseUrl}/checklist-templates", $data);
-            return $response->json() ?? ['success' => false, 'message' => 'Gagal membuat template checklist.'];
+            return $this->handleMutationResponse($response, 'Gagal membuat template checklist.');
         } catch (\Exception $e) {
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Koneksi ke backend gagal: ' . $e->getMessage()];
         }
     }
 
@@ -296,9 +371,9 @@ class ExpressApiService
         try {
             $url = $id ? "{$this->baseUrl}/inspections/{$id}/draft" : "{$this->baseUrl}/inspections/draft";
             $response = $this->client()->post($url, $payload);
-            return $response->json() ?? ['success' => false, 'message' => 'Gagal menyimpan draft.'];
+            return $this->handleMutationResponse($response, 'Gagal menyimpan draft inspeksi.');
         } catch (\Exception $e) {
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Koneksi ke backend gagal: ' . $e->getMessage()];
         }
     }
 
@@ -309,9 +384,9 @@ class ExpressApiService
     {
         try {
             $response = $this->client()->post("{$this->baseUrl}/inspections/{$id}/submit", $payload);
-            return $response->json() ?? ['success' => false, 'message' => 'Gagal mengirim inspeksi.'];
+            return $this->handleMutationResponse($response, 'Gagal mengirimkan inspeksi.');
         } catch (\Exception $e) {
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Koneksi ke backend gagal: ' . $e->getMessage()];
         }
     }
 
@@ -322,9 +397,9 @@ class ExpressApiService
     {
         try {
             $response = $this->client()->post("{$this->baseUrl}/inspections/{$id}/review", $payload);
-            return $response->json() ?? ['success' => false, 'message' => 'Gagal memverifikasi inspeksi.'];
+            return $this->handleMutationResponse($response, 'Gagal memverifikasi inspeksi.');
         } catch (\Exception $e) {
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Koneksi ke backend gagal: ' . $e->getMessage()];
         }
     }
 
@@ -361,15 +436,15 @@ class ExpressApiService
     }
 
     /**
-     * Update Finding Action Progress
+     * Update Action on Finding
      */
     public function updateFindingAction($id, array $payload): array
     {
         try {
             $response = $this->client()->post("{$this->baseUrl}/findings/{$id}/actions", $payload);
-            return $response->json() ?? ['success' => false, 'message' => 'Gagal memperbarui progres temuan.'];
+            return $this->handleMutationResponse($response, 'Gagal memperbarui progres temuan.');
         } catch (\Exception $e) {
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Koneksi ke backend gagal: ' . $e->getMessage()];
         }
     }
 
@@ -380,14 +455,14 @@ class ExpressApiService
     {
         try {
             $response = $this->client()->post("{$this->baseUrl}/findings/{$id}/verify", $payload);
-            return $response->json() ?? ['success' => false, 'message' => 'Gagal memverifikasi temuan.'];
+            return $this->handleMutationResponse($response, 'Gagal memverifikasi penyelesaian temuan.');
         } catch (\Exception $e) {
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Koneksi ke backend gagal: ' . $e->getMessage()];
         }
     }
 
     /**
-     * Schedules List
+     * Inspection Schedules List
      */
     public function getSchedules(array $filters = []): array
     {
@@ -409,9 +484,9 @@ class ExpressApiService
     {
         try {
             $response = $this->client()->post("{$this->baseUrl}/inspection-schedules", $data);
-            return $response->json() ?? ['success' => false, 'message' => 'Gagal menambahkan jadwal.'];
+            return $this->handleMutationResponse($response, 'Gagal menambahkan jadwal.');
         } catch (\Exception $e) {
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Koneksi ke backend gagal: ' . $e->getMessage()];
         }
     }
 
@@ -454,9 +529,9 @@ class ExpressApiService
     {
         try {
             $response = $this->client()->post("{$this->baseUrl}/users", $data);
-            return $response->json() ?? ['success' => false, 'message' => 'Gagal membuat pengguna.'];
+            return $this->handleMutationResponse($response, 'Gagal membuat pengguna.');
         } catch (\Exception $e) {
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Koneksi ke backend gagal: ' . $e->getMessage()];
         }
     }
 
@@ -467,9 +542,9 @@ class ExpressApiService
     {
         try {
             $response = $this->client()->patch("{$this->baseUrl}/users/{$id}", $data);
-            return $response->json() ?? ['success' => false, 'message' => 'Gagal memperbarui pengguna.'];
+            return $this->handleMutationResponse($response, 'Gagal memperbarui pengguna.');
         } catch (\Exception $e) {
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => 'Koneksi ke backend gagal: ' . $e->getMessage()];
         }
     }
 

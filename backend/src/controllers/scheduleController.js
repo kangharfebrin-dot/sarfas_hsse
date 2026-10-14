@@ -1,6 +1,9 @@
 const db = require('../config/db');
 const { logAudit } = require('../middleware/audit');
 
+const VALID_FREQUENCIES = ['HARIAN', 'MINGGUAN', 'BULANAN', 'TRIWULAN', 'SEMESTER', 'TAHUNAN'];
+const VALID_STATUSES = ['TERJADWAL', 'SELESAI', 'TERLAMBAT', 'DIBATALKAN'];
+
 const list = async (req, res, next) => {
   try {
     const { status, sarfas_id, assigned_user_id, month, year } = req.query;
@@ -31,9 +34,15 @@ const list = async (req, res, next) => {
       query = query.where('inspection_schedules.assigned_user_id', assigned_user_id);
     }
     if (month && year) {
-      const start = `${year}-${String(month).padStart(2, '0')}-01`;
-      const end = `${year}-${String(month).padStart(2, '0')}-31`;
-      query = query.whereBetween('inspection_schedules.scheduled_date', [start, end]);
+      const m = parseInt(month, 10);
+      const y = parseInt(year, 10);
+      if (m >= 1 && m <= 12 && y >= 2000) {
+        // Accurately determine the last day of month (including February leap year)
+        const lastDay = new Date(y, m, 0).getDate();
+        const start = `${y}-${String(m).padStart(2, '0')}-01`;
+        const end = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+        query = query.whereBetween('inspection_schedules.scheduled_date', [start, end]);
+      }
     }
 
     const schedules = await query.orderBy('inspection_schedules.scheduled_date', 'asc');
@@ -49,38 +58,79 @@ const list = async (req, res, next) => {
 };
 
 const create = async (req, res, next) => {
+  const trx = await db.transaction();
   try {
     const { title, sarfas_id, template_id, assigned_user_id, scheduled_date, frequency, notes } = req.body;
 
     if (!title || !sarfas_id || !template_id || !assigned_user_id || !scheduled_date) {
-      return res.status(400).json({ success: false, message: 'Harap lengkapi semua field jadwal yang wajib.' });
+      await trx.rollback();
+      return res.status(400).json({ success: false, message: 'Harap lengkapi seluruh field jadwal yang wajib diisi.' });
     }
 
-    // Check conflict: Same sarfas on same date
-    const conflict = await db('inspection_schedules')
+    // Validate assigned user exists, is active, and has appropriate role
+    const assignee = await trx('users')
+      .join('roles', 'users.role_id', 'roles.id')
+      .where('users.id', assigned_user_id)
+      .where('users.is_active', true)
+      .first();
+
+    if (!assignee) {
+      await trx.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Petugas yang ditugaskan tidak ditemukan atau berstatus nonaktif.'
+      });
+    }
+
+    // Validate Sarfas exists and is active
+    const sarfas = await trx('sarfas_assets').where('id', sarfas_id).first();
+    if (!sarfas || !sarfas.is_active) {
+      await trx.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Sarfas tidak ditemukan atau berstatus nonaktif.'
+      });
+    }
+
+    // Validate Checklist Template exists and is active
+    const template = await trx('checklist_templates').where('id', template_id).first();
+    if (!template || !template.is_active) {
+      await trx.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Template checklist tidak ditemukan atau berstatus nonaktif.'
+      });
+    }
+
+    // Check conflict: Same sarfas on same date (concurrency protected inside transaction)
+    const conflict = await trx('inspection_schedules')
       .where('sarfas_id', sarfas_id)
       .where('scheduled_date', scheduled_date)
       .whereNot('status', 'DIBATALKAN')
       .first();
 
     if (conflict) {
+      await trx.rollback();
       return res.status(400).json({
         success: false,
-        message: 'Peringatan: Jadwal inspeksi untuk sarfas ini pada tanggal tersebut sudah ada.'
+        message: `Konflik Jadwal: Sarfas ini telah memiliki jadwal aktif pada tanggal ${scheduled_date}.`
       });
     }
 
-    const [newId] = await db('inspection_schedules').insert({
+    const freqValue = VALID_FREQUENCIES.includes(frequency) ? frequency : (template.inspection_frequency || 'BULANAN');
+
+    const [newId] = await trx('inspection_schedules').insert({
       title,
       sarfas_id,
       template_id,
       assigned_user_id,
       scheduled_date,
-      frequency: frequency || 'BULANAN',
+      frequency: freqValue,
       status: 'TERJADWAL',
       notes: notes || null
     });
 
+    await trx.commit();
     await logAudit(req, 'CREATE_SCHEDULE', 'JADWAL', newId, `Membuat jadwal inspeksi: ${title}`);
 
     res.status(201).json({
@@ -89,6 +139,7 @@ const create = async (req, res, next) => {
       data: { id: newId }
     });
   } catch (error) {
+    await trx.rollback();
     next(error);
   }
 };
@@ -101,6 +152,23 @@ const update = async (req, res, next) => {
     const schedule = await db('inspection_schedules').where('id', id).first();
     if (!schedule) {
       return res.status(404).json({ success: false, message: 'Jadwal tidak ditemukan.' });
+    }
+
+    if (status && !VALID_STATUSES.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Status jadwal tidak valid. Nilai yang diperbolehkan: ${VALID_STATUSES.join(', ')}.`
+      });
+    }
+
+    if (assigned_user_id) {
+      const assignee = await db('users').where('id', assigned_user_id).where('is_active', true).first();
+      if (!assignee) {
+        return res.status(400).json({
+          success: false,
+          message: 'Petugas yang ditugaskan tidak valid atau berstatus nonaktif.'
+        });
+      }
     }
 
     await db('inspection_schedules').where('id', id).update({

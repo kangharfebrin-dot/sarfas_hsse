@@ -44,5 +44,27 @@ module.exports = {
     seeds: {
       directory: './seeds'
     }
+  },
+  test: {
+    client: 'mysql2',
+    connection: {
+      host: process.env.DB_HOST || '127.0.0.1',
+      port: Number(process.env.DB_PORT) || 3306,
+      user: process.env.DB_USER || 'root',
+      password: process.env.DB_PASSWORD || '',
+      database: process.env.DB_NAME_TEST || process.env.DB_NAME || 'checklist_sarfas_hsse',
+      charset: 'utf8mb4'
+    },
+    pool: {
+      min: 1,
+      max: 5
+    },
+    migrations: {
+      directory: './migrations',
+      tableName: 'knex_migrations'
+    },
+    seeds: {
+      directory: './seeds'
+    }
   }
 };

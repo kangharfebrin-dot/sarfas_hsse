@@ -6,16 +6,17 @@ Sistem Informasi Digitalisasi Inspeksi, Pemeriksaan, Pemantauan, dan Pelaporan K
 
 ## 1. Arsitektur Teknologi & Pemisahan Tanggung Jawab
 
-Aplikasi ini dibangun menggunakan arsitektur decoupled yang memisahkan layer presentasi (Frontend), logika bisnis & REST API (Backend), dan database relasional:
+Aplikasi ini dibangun menggunakan arsitektur *decoupled* yang memisahkan layer presentasi (Frontend), logika bisnis & REST API (Backend), dan database relasional:
 
 ```
 [ Pengguna / Browser ]
           │ (HTTP / Session Cookie)
           ▼
 ┌───────────────────────────────────────────────┐
-│              FRONTEND (Laravel 12)            │
-│   • Blade Templates   • Tailwind CSS (v4)     │
-│   • Alpine.js         • Chart.js (v4)         │
+│              FRONTEND (Laravel 13)            │
+│   • PHP 8.3+          • Blade Templates       │
+│   • Tailwind CSS (v4) • Vite 8                │
+│   • Alpine.js (v3)    • Chart.js (v4)         │
 │   • ExpressApiService (Server-to-Server HTTP) │
 │   Port: http://localhost:8000                 │
 └───────────────────────┬───────────────────────┘
@@ -23,9 +24,11 @@ Aplikasi ini dibangun menggunakan arsitektur decoupled yang memisahkan layer pre
                         ▼
 ┌───────────────────────────────────────────────┐
 │          BACKEND API (Node.js + Express)      │
-│   • REST API (/api/v1) • JWT Auth Middleware  │
-│   • Business Logic     • Inspection Engine    │
-│   • Finding Workflow   • Audit Trail Logger   │
+│   • Node.js 20.19+ / 22+ / 24+                │
+│   • Express.js 4.21   • Helmet Security       │
+│   • Rate Limiting     • Strict Origin CORS    │
+│   • Anti-IDOR Scoping • Token Revocation List │
+│   • Knex Query Engine • Audit Trail Logger    │
 │   Port: http://localhost:3001                 │
 └───────────────────────┬───────────────────────┘
                         │ (mysql2 / Knex Query Builder)
@@ -40,246 +43,229 @@ Aplikasi ini dibangun menggunakan arsitektur decoupled yang memisahkan layer pre
 ```
 
 > **Prinsip Arsitektur Utama:**
-> - **Laravel** hanya bertindak sebagai antarmuka pengguna (UI/UX) dan session server-side.
-> - **Express.js** merupakan **satu-satunya gerbang** yang memiliki hak akses query ke database MySQL dan mengeksekusi logika bisnis (validasi, perhitungan kepatuhan, transisi status temuan, dan logging audit).
-> - Tidak ada duplikasi database connection di Laravel. Kredensial database tidak pernah terekspos ke frontend atau browser pengguna.
+> - **Laravel 13** hanya bertindak sebagai antarmuka pengguna (UI/UX), session guard server-side, dan view rendering.
+> - **Express.js** merupakan **satu-satunya gerbang** yang memiliki hak akses query ke database MySQL dan mengeksekusi logika bisnis (validasi, perhitungan jadwal berkala, transisi status temuan, dan logging audit).
+> - Tidak ada koneksi database langsung di Laravel. Kredensial database tidak pernah terekspos ke frontend atau browser pengguna.
 
 ---
 
-## 2. Struktur Proyek
+## 2. Fitur Keamanan & Integritas Data (Security Hardening)
 
-```
-Checklist_Sarfas_HSSE/
-├── backend/                             # Express REST API & Database
-│   ├── src/
-│   │   ├── config/                      # Konfigurasi database & JWT
-│   │   ├── controllers/                 # Controller API (Auth, Sarfas, Inspeksi, dll)
-│   │   ├── database/
-│   │   │   ├── knexfile.js              # Konfigurasi Knex untuk WAMPServer MySQL
-│   │   │   ├── migrations/              # 14 Tabel relasional HSSE
-│   │   │   └── seeds/                   # Data demonstrasi FT Maos
-│   │   ├── middlewares/                 # Auth JWT, Role Check, Audit Logger, Error Handler
-│   │   ├── routes/                      # Route definisi API v1 (/api/v1/...)
-│   │   ├── server.js                    # Entry point Express API (Port 3001)
-│   │   └── test-api.js                  # Automated API Test Suite
-│   ├── .env.example
-│   └── package.json
-│
-├── frontend/                            # Laravel 12 Presentation Layer
-│   ├── app/
-│   │   ├── Http/Controllers/           # Controller Blade yang memanggil ExpressApiService
-│   │   ├── Http/Middleware/            # EnsureApiAuthenticated (Session Guard)
-│   │   └── Services/ExpressApiService.php # HTTP Client ke Express REST API
-│   ├── resources/
-│   │   ├── css/app.css                  # Tailwind CSS dengan palet korporat Pertamina
-│   │   ├── js/app.js                    # Inisialisasi Alpine.js & Chart.js
-│   │   └── views/
-│   │       ├── layouts/app.blade.php    # Sidebar responsif, Topbar, Notifikasi
-│   │       ├── auth/login.blade.php     # Halaman login + 1-Click Role Switcher
-│   │       ├── dashboard/index.blade.php# 6 Kartu KPI, Grafik Chart.js, Temuan Kritis
-│   │       ├── sarfas/                  # Inventaris Sarfas & Detail
-│   │       ├── master-checklist/        # Master Checklist Template
-│   │       ├── inspections/             # Wizard, Mobile Form, Show & Signature
-│   │       ├── findings/                # Monitoring Temuan, Foto Sebelum/Sesudah, Verifikasi
-│   │       ├── schedules/               # Jadwal Inspeksi & Deteksi Overdue
-│   │       ├── reports/                 # Filter Laporan, Ekspor CSV & Cetak Resmi PDF
-│   │       ├── users/                   # Manajemen Pengguna & Otorisasi
-│   │       └── audit-logs/              # Jejak Audit & Aktivitas Pengguna
-│   ├── routes/web.php
-│   ├── .env.example
-│   └── package.json
-└── README.md
-```
+Aplikasi ini telah melalui audit teknis dan pengerasan keamanan menyeluruh:
+
+1. **Zero Hardcoded Secrets & Fail-Fast Startup:**
+   - Fallback JWT secret bawaan telah dihilangkan total. Server backend akan menolak startup pada lingkungan produksi jika `JWT_SECRET` tidak dikonfigurasi atau kurang dari 32 karakter.
+2. **Revocable JWT Tokens (Logout Denylist):**
+   - Setiap aksi logout mendaftarkan JWT token ke *in-memory revocation list* aktif dengan pembersihan otomatis setelah masa berlaku token berakhir (24 jam).
+3. **Proteksi Brute-Force & HTTP Headers:**
+   - Endpoint login diproteksi rate limiter (maksimal 30 percobaan per 15 menit per IP).
+   - Global rate limiter (1000 request per 15 menit).
+   - Integrasi `helmet` untuk proteksi Cross-Site Scripting (XSS), Content Security Policy, and header framing.
+4. **CORS Ketat (Strict Origin Whitelist):**
+   - Menolak request origin yang tidak terdaftar di variabel lingkungan `CORS_ORIGIN`. Request internal server-to-server (tanpa origin header dari Laravel) tetap diizinkan secara aman.
+5. **Isolasi Mode Demo:**
+   - Endpoint `/api/v1/auth/demo-accounts` dan quick demo login hanya aktif bila `DEMO_MODE=true` dan `NODE_ENV !== 'production'`.
+   - Hanya mengembalikan 4 akun demo terdaftar (tidak pernah membaca seluruh tabel user atau mengekspos hash kata sandi).
+6. **Pencegahan IDOR (Insecure Direct Object Reference) & Hak Kepemilikan Data:**
+   - Draft inspeksi hanya dapat disunting atau dikirimkan oleh inspektor pembuatnya (atau Super Admin / Admin HSSE).
+   - Inspektor lain diblokir dengan status HTTP 403 Forbidden bila mencoba memanipulasi ID draft pengguna lain.
+7. **Perlindungan Akun Super Admin:**
+   - Akun Super Admin dilindungi dari penurunan hak akses (*role demotion*) atau penonaktifan tidak sengaja.
+8. **Validasi Formulir HSSE Lapangan:**
+   - Whitelist template checklist: Item yang bukan bagian dari template inspeksi langsung ditolak dengan HTTP 400.
+   - Wajib unggah foto dokumentasi fisik untuk item dengan kriteria `requires_photo: true`.
+   - Wajib catatan ketidaksesuaian (minimal 5 karakter) untuk setiap butir dengan kondisi `TIDAK_BAIK`.
+   - Pencegahan pengiriman ganda (*idempotent submit protection*).
+9. **Kalkulasi Jadwal Berkala Akurat:**
+   - Mengikuti frekuensi checklist: `HARIAN` (+1 hari), `MINGGUAN` (+7 hari), `BULANAN` (+1 bulan), `TRIWULAN` (+3 bulan), `SEMESTER` (+6 bulan), dan `TAHUNAN` (+1 tahun) dengan perhitungan batas akhir bulan dan tahun kabisat yang benar.
+10. **Akurasi Dashboard & Proteksi Ekspor:**
+    - Dashboard tidak lagi menampilkan fallback data palsu jika API backend tidak merespons; status gangguan ditampilkan secara transparan via alert banner.
+    - Query laporan mengeliminasi bottleneck N+1 melalui agregasi SQL tunggal (`LEFT JOIN` + `COUNT`).
+    - Ekspor CSV disanitasi dari potensi *Spreadsheet Formula Injection* (`=, +, -, @, \t, \r`).
 
 ---
 
-## 3. Identitas Visual & Palet Warna
+## 3. Prasyarat Sistem & Dependensi
 
-Sistem antarmuka terinspirasi dari identitas korporat Pertamina:
-- **Pertamina Red (`#D71920`)**: Warna utama aksi penting, tombol primer, dan status kritis.
-- **Corporate Blue (`#00529B`)**: Warna sekunder, informasi, navigasi pendukung, dan tombol netral.
-- **Corporate Green (`#008B5A`)**: Warna status keberhasilan, kondisi Baik, dan kepatuhan.
-- **Safety Orange (`#F59E0B`)**: Warna perhatian, peringatan, dan status Perlu Tindak Lanjut.
-- **Critical Red (`#DC2626`)**: Warna bahaya temuan risiko tinggi/kritis.
-- **Background Utama (`#F5F7FA`)**: Kanvas lembut dengan kontras tinggi terhadap teks gelap (`#1F2937`).
-
----
-
-## 4. Panduan Instalasi & Menjalankan Aplikasi
-
-### A. Prasyarat Sistem
-1. **PHP**: v8.2 atau lebih baru dengan ekstensi `curl`, `mbstring`, `openssl`, `pdo`.
-2. **Composer**: v2.x.
-3. **Node.js**: v18.x atau v20.x LTS & **npm**.
-4. **WAMPServer**: Pastikan service **MySQL / MariaDB** aktif (ikon WAMP berwarna hijau).
+| Komponen | Persyaratan Minimum | Versi yang Digunakan |
+| :--- | :--- | :--- |
+| **PHP** | `>= 8.3` (ekstensi: `curl`, `mbstring`, `openssl`, `pdo`, `xml`) | PHP 8.3 / 8.4 |
+| **Laravel** | `^13.17` (Laravel 13) | Laravel 13.x |
+| **Node.js** | `>= 20.19.0` atau `>= 22.12.0` (syarat Vite 8) | Node.js 20.19+ / 24+ |
+| **Vite** | `^8.0.0` | Vite 8.3.x |
+| **Database** | MySQL 5.7+ / MariaDB 10.3+ (WAMPServer) | MySQL 5.7 / 8.0 via WAMP |
+| **Web Server** | Port `8000` (Laravel) & Port `3001` (Express API) | - |
 
 ---
 
-### B. Konfigurasi Database (WAMPServer)
-1. Buka **phpMyAdmin** melalui browser (`http://localhost/phpmyadmin`) atau terminal MySQL.
-2. Buat database baru bernama `checklist_sarfas_hsse`:
+## 4. Panduan Instalasi & Menjalankan (Windows PowerShell & WAMPServer)
+
+### A. Persiapan Database WAMPServer
+1. Pastikan **WAMPServer** sudah berjalan (ikon WAMP pada taskbar berwarna hijau).
+2. Buka **phpMyAdmin** (`http://localhost/phpmyadmin`) atau terminal MySQL, lalu buat database:
    ```sql
    CREATE DATABASE checklist_sarfas_hsse CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
    ```
-3. Default port MySQL WAMPServer biasanya `3306` (atau `3307`/`3308` jika dikonfigurasi demikian).
+   *(Port standar WAMPServer MySQL adalah `3306` dengan username `root` tanpa password).*
 
 ---
 
-### C. Menjalankan Backend (Node.js + Express)
-1. Masuk ke direktori `backend`:
-   ```bash
-   cd backend
+### B. Menyiapkan & Menjalankan Backend (Express API)
+
+1. Buka jendela **Windows PowerShell**, lalu masuk ke direktori backend:
+   ```powershell
+   cd e:\Magang\Checklist_Sarfas_HSSE\backend
    ```
-2. Pasang dependency:
-   ```bash
+2. Pasang dependensi Node.js:
+   ```powershell
    npm install
    ```
-3. Siapkan file konfigurasi environment:
-   ```bash
-   cp .env.example .env
+3. Buat file `.env` dari template `.env.example`:
+   ```powershell
+   Copy-Item .env.example .env
    ```
-   *Sesuaikan `DB_PORT`, `DB_USER`, dan `DB_PASSWORD` dengan kredensial WAMPServer Anda jika berbeda (default user: `root`, password: kosong).*
-4. Jalankan migrasi tabel database:
-   ```bash
+   *Pastikan parameter database di `backend/.env` sesuai dengan WAMPServer:*
+   ```env
+   NODE_ENV=development
+   PORT=3001
+   DB_HOST=127.0.0.1
+   DB_PORT=3306
+   DB_USER=root
+   DB_PASSWORD=
+   DB_NAME=checklist_sarfas_hsse
+   JWT_SECRET=pertamina_ft_maos_hsse_jwt_secret_production_ready_2026_super_secure
+   JWT_EXPIRES_IN=24h
+   CORS_ORIGIN=http://localhost:8000,http://127.0.0.1:8000
+   DEMO_MODE=true
+   ```
+4. Jalankan migrasi tabel database Knex:
+   ```powershell
    npm run migrate
    ```
-5. Masukkan data demonstrasi (seed data):
-   ```bash
+5. Jalankan seed data master sarfas dan fixture operasional FT Maos:
+   ```powershell
    npm run seed
    ```
-6. Jalankan pengujian otomatis untuk memverifikasi seluruh endpoint API:
-   ```bash
+6. **Jalankan Automated Test Suite Backend:**
+   ```powershell
    npm test
    ```
+   *Seluruh 22 test assertion (koneksi, auth, RBAC, IDOR, checklist, submit, report) harus berstatus `✓ PASS` dengan exit code 0.*
 7. Jalankan server Express API:
-   ```bash
+   ```powershell
    npm run dev
    ```
-   *Express API akan aktif di `http://localhost:3001`.*
+   *API akan aktif di `http://localhost:3001` (Health check: `http://localhost:3001/health`).*
 
 ---
 
-### D. Menjalankan Frontend (Laravel + Blade + Tailwind)
-1. Buka jendela terminal baru dan masuk ke direktori `frontend`:
-   ```bash
-   cd frontend
+### C. Menyiapkan & Menjalankan Frontend (Laravel 13)
+
+1. Buka jendela **PowerShell baru**, lalu masuk ke direktori frontend:
+   ```powershell
+   cd e:\Magang\Checklist_Sarfas_HSSE\frontend
    ```
-2. Pasang dependency PHP & Node:
-   ```bash
+2. Pasang dependensi Composer dan NPM:
+   ```powershell
    composer install
    npm install
    ```
-3. Siapkan file konfigurasi `.env`:
-   ```bash
-   cp .env.example .env
+3. Buat file `.env` frontend:
+   ```powershell
+   Copy-Item .env.example .env
    php artisan key:generate
    ```
-   *Pastikan `EXPRESS_API_URL=http://localhost:3001/api/v1`.*
-4. Build bundle aset Tailwind CSS & Alpine.js:
-   ```bash
+   *Pastikan URL API Express di `frontend/.env` mengarah ke port backend:*
+   ```env
+   APP_NAME="Checklist Sarfas HSSE"
+   APP_ENV=local
+   APP_URL=http://localhost:8000
+   EXPRESS_API_URL=http://localhost:3001/api/v1
+   DEMO_MODE=true
+   ```
+4. Jalankan pengujian otomatis Laravel:
+   ```powershell
+   php vendor/bin/phpunit
+   ```
+   *Seluruh 6 Feature & Unit test authentication redirect dan login page harus berstatus `passed`.*
+5. Build aset frontend (Tailwind CSS v4 & Alpine.js via Vite 8):
+   ```powershell
    npm run build
    ```
-5. Jalankan web server Laravel:
-   ```bash
+6. Jalankan server web Laravel:
+   ```powershell
    php artisan serve --port=8000
    ```
-   *Buka browser di `http://localhost:8000`.*
+   *Buka browser di **`http://localhost:8000`**.*
 
 ---
 
 ## 5. Akun Demonstrasi (1-Click Demo Login)
 
-Halaman login (`http://localhost:8000/login`) dilengkapi fitur **1-Click Quick Demo Login** untuk beralih role secara instan saat presentasi:
+Halaman login (`http://localhost:8000/login`) menyediakan **1-Click Demo Switcher** untuk simulasi dan audit alur peran pengguna secara cepat:
 
-| Role | Email | Password | Hak Akses Utama |
+| Role | Email | Password | Cakupan Wewenang |
 | :--- | :--- | :--- | :--- |
-| **Super Admin** | `superadmin@pertamina.demo` | `password123` | Akses penuh, manajemen user, konfigurasi, audit log lengkap. |
-| **Admin HSSE** | `admin.hsse@pertamina.demo` | `password123` | Kelola master sarfas, template checklist, monitoring jadwal & review. |
-| **Inspektor Lapangan** | `inspektor.maos@pertamina.demo` | `password123` | Melaksanakan checklist lapangan, foto bukti, draft & submit inspeksi. |
-| **Verifikator / Approver** | `verifikator.hsse@pertamina.demo` | `password123` | Verifikasi tindakan perbaikan temuan, persetujuan & sign-off hasil. |
+| **Super Admin** | `superadmin@pertamina.demo` | `password123` | Akses penuh sistem, kelola user, konfigurasi server, dan audit log lengkap. |
+| **Admin HSSE** | `admin.hsse@pertamina.demo` | `password123` | Master sarfas, checklist template, penjadwalan, monitoring kepatuhan. |
+| **Inspektor Lapangan** | `inspektor.maos@pertamina.demo` | `password123` | Pengisian checklist mobile, unggah foto bukti, simpan draft, kirim inspeksi. |
+| **Verifikator / Approver** | `verifikator.hsse@pertamina.demo` | `password123` | Review dan verifikasi hasil inspeksi, verifikasi penutupan temuan fisik. |
+
+> [!NOTE]
+> Fitur 1-Click Quick Demo Login dan endpoint `/api/v1/auth/demo-accounts` otomatis dinonaktifkan jika `DEMO_MODE=false` atau saat aplikasi berjalan pada lingkungan produksi (`APP_ENV=production` / `NODE_ENV=production`).
 
 ---
 
-## 6. Fitur & Modul Utama
+## 6. Daftar Endpoint REST API (`/api/v1`)
 
-### 1. Dashboard HSSE Eksekutif
-- **6 Indikator Kunci (KPI Cards):** Total Sarfas Terdaftar, Inspeksi Bulan Ini, Sarfas Kondisi Baik, Temuan Terbuka, Temuan Kritis, dan Inspeksi Terlambat.
-- **Grafik Tren Interaktif (Chart.js):** Tren riwayat inspeksi per bulan dan proporsi distribusi temuan risiko.
-- **Panel Tindak Lanjut Mendesak:** Menampilkan temuan risiko Tinggi & Kritis yang mendekati tenggat waktu perbaikan.
-- **Jejak Audit Real-Time:** Menampilkan aktivitas operator secara live.
-
-### 2. Inventaris Sarfas (Sarana & Fasilitas)
-- Pengelompokan sarfas: APAR, Hydrant, Eyewash & Emergency Shower, Spill Kit, Kotak P3K, Rambu K3, dll.
-- Filter multi-kriteria: Kategori, Lokasi, Status Kondisi (Baik, Perlu Perhatian, Rusak Ringan, Rusak Berat).
-- Detail spesifikasi lengkap, simulasi QR Code tag aset fisik, riwayat inspeksi, dan log temuan terkait.
-
-### 3. Master Checklist Template
-- Pembuatan dan pemeliharaan template checklist dinamis per kategori sarfas tanpa mengubah kode program.
-- Penentuan bagian pemeriksaan (Section), item kriteria, pilihan status (Baik, Tidak Baik, N/A), dan penanda **Kritis**.
-
-### 4. Formulir Checklist Lapangan (Mobile-Friendly)
-- Desain dioptimalkan untuk perangkat smartphone saat inspeksi fisik di area operasional tangki atau filling shed.
-- **Sticky Progress Bar** yang menghitung progres kelengkapan butir pemeriksaan (misal: "8 dari 10 selesai").
-- Validasi cerdas: Jika jawaban dipilih **Tidak Baik**, sistem otomatis membuka kolom catatan temuan, unggah foto bukti, dan penetapan tingkat risiko.
-- Fitur **Simpan Sebagai Draft** agar inspektor dapat melanjutkan pemeriksaan tanpa kehilangan data.
-- **Digital Signature** & lembar verifikasi supervisor HSSE.
-
-### 5. Temuan & Tindak Lanjut (Corrective Action)
-- Matriks Risiko 4 Tingkat: **Rendah**, **Sedang**, **Tinggi**, dan **Kritis**.
-- Dokumentasi komparasi foto: **Sebelum Perbaikan** vs **Setelah Perbaikan**.
-- Alur verifikasi ketat: Temuan tidak dapat ditutup sepihak, melainkan wajib melalui peninjauan oleh Verifikator HSSE.
-
-### 6. Jadwal Inspeksi
-- Kalender agenda inspeksi berkala (Harian, Mingguan, Bulanan, Triwulanan).
-- Deteksi otomatis status jadwal: **Terjadwal**, **Selesai**, dan **Terlambat (Overdue)**.
-
-### 7. Laporan Rekapitulasi & Ekspor
-- Filter laporan komprehensif berdasarkan rentang tanggal, kategori, lokasi, dan status kondisi.
-- **Ekspor CSV / Spreadsheet** secara instan sesuai filter aktif.
-- **Pratinjau Cetak Formal (Kop Surat Resmi):** Tampilan cetak standar A4 dokumen HSSE Pertamina FT Maos lengkap dengan 3 kolom tanda tangan (Inspektor, Supervisor HSSE, Fuel Terminal Manager).
-
-### 8. Manajemen Pengguna & Otorisasi
-- Manajemen akun pengguna berbasis peran (Role-Based Access Control).
-- Aktivasi / penonaktifan akun secara aman.
-
-### 9. Jejak Audit (Audit Logs)
-- Pencatatan otomatis setiap aksi penting di database: login, pembuatan sarfas, submit inspeksi, update tindakan, verifikasi penutupan temuan, lengkap dengan stempel waktu, IP address, dan rincian payload data.
-
----
-
-## 7. Endpoint REST API (`/api/v1`)
-
-| Method | Endpoint | Deskripsi | Otorisasi |
+| Method | Endpoint | Fungsi | Hak Akses |
 | :--- | :--- | :--- | :--- |
-| `POST` | `/api/v1/auth/login` | Autentikasi pengguna & penerbitan JWT | Publik |
-| `POST` | `/api/v1/auth/quick-login` | 1-Click login akun demonstrasi | Publik |
-| `GET` | `/api/v1/dashboard/summary` | Agregasi KPI, statistik grafik, dan temuan prioritas | Terautentikasi |
-| `GET` | `/api/v1/sarfas` | Daftar sarfas dengan pencarian dan filter | Terautentikasi |
-| `POST` | `/api/v1/sarfas` | Tambah data sarfas baru | Admin HSSE / Super Admin |
-| `GET` | `/api/v1/sarfas/:id` | Detail spesifikasi dan riwayat sarfas | Terautentikasi |
-| `PATCH` | `/api/v1/sarfas/:id` | Perbarui data sarfas | Admin HSSE / Super Admin |
+| `GET` | `/health` | Pemeriksaan kesehatan API server | Publik |
+| `POST` | `/api/v1/auth/login` | Autentikasi kredensial pengguna & terbitkan JWT | Publik (Rate limited: 30/15m) |
+| `POST` | `/api/v1/auth/logout` | Revokasi JWT token ke logout denylist | Terautentikasi |
+| `GET` | `/api/v1/auth/demo-accounts` | Daftar akun demo (hanya saat mode demo aktif) | Publik (Gated demo mode) |
+| `GET` | `/api/v1/dashboard/summary` | KPI operasional, tren inspeksi, temuan prioritas | Terautentikasi |
+| `GET` | `/api/v1/sarfas` | Inventaris sarfas dengan filter kategori & lokasi | Terautentikasi |
+| `GET` | `/api/v1/sarfas/:id` | Rincian aset, QR code tag, riwayat inspeksi | Terautentikasi |
+| `POST` | `/api/v1/sarfas` | Pendaftaran sarfas baru | Super Admin, Admin HSSE |
+| `PATCH` | `/api/v1/sarfas/:id` | Pembaruan data sarfas | Super Admin, Admin HSSE |
 | `GET` | `/api/v1/checklist-templates` | Daftar master checklist template | Terautentikasi |
-| `POST` | `/api/v1/checklist-templates` | Buat template checklist baru beserta item | Admin HSSE / Super Admin |
-| `GET` | `/api/v1/inspections` | Daftar riwayat dan antrean inspeksi | Terautentikasi |
-| `POST` | `/api/v1/inspections` | Inisiasi draft inspeksi sarfas | Inspektor / Admin |
-| `GET` | `/api/v1/inspections/:id` | Rincian hasil inspeksi dan lembar jawaban | Terautentikasi |
-| `POST` | `/api/v1/inspections/:id/submit` | Submit inspeksi final & pembuatan temuan otomatis | Inspektor / Admin |
-| `POST` | `/api/v1/inspections/:id/review` | Persetujuan / sign-off supervisor HSSE | Verifikator / Admin |
-| `GET` | `/api/v1/findings` | Daftar temuan ketidaksesuaian sarfas | Terautentikasi |
-| `GET` | `/api/v1/findings/:id` | Detail temuan, bukti foto & riwayat perbaikan | Terautentikasi |
-| `POST` | `/api/v1/findings/:id/action` | Pembaruan tindakan korektif dan foto perbaikan | Inspektor / PIC |
-| `POST` | `/api/v1/findings/:id/verify` | Verifikasi resmi penutupan temuan | Verifikator / Admin HSSE |
-| `GET` | `/api/v1/inspection-schedules`| Daftar jadwal inspeksi mendatang & terlambat | Terautentikasi |
-| `POST` | `/api/v1/inspection-schedules`| Buat jadwal inspeksi baru | Admin HSSE / Super Admin |
-| `GET` | `/api/v1/reports/inspections` | Rekapitulasi laporan hasil inspeksi dan kepatuhan | Terautentikasi |
-| `GET` | `/api/v1/users` | Daftar pengguna dan role | Super Admin / Admin HSSE |
-| `POST` | `/api/v1/users` | Registrasi pengguna baru | Super Admin / Admin HSSE |
-| `PATCH` | `/api/v1/users/:id` | Perbarui data akun atau status pengguna | Super Admin / Admin HSSE |
-| `GET` | `/api/v1/audit-logs` | Daftar riwayat aktivitas & jejak audit sistem | Super Admin / Admin HSSE |
+| `POST` | `/api/v1/checklist-templates` | Buat template checklist & item penilaian | Super Admin, Admin HSSE |
+| `GET` | `/api/v1/inspections` | Daftar inspeksi tersaring | Terautentikasi |
+| `POST` | `/api/v1/inspections/draft` | Inisiasi / simpan draft inspeksi | Super Admin, Admin HSSE, Inspektor |
+| `PUT` | `/api/v1/inspections/:id` | Update draft inspeksi (anti-IDOR: hanya pemilik) | Super Admin, Admin HSSE, Pemilik Draft |
+| `POST` | `/api/v1/inspections/:id/submit`| Submit inspeksi final & validasi kelengkapan fisik | Super Admin, Admin HSSE, Pemilik Draft |
+| `POST` | `/api/v1/inspections/:id/review`| Peninjauan & persetujuan hasil inspeksi | Super Admin, Admin HSSE, Approver |
+| `GET` | `/api/v1/findings` | Daftar temuan & matriks risiko | Terautentikasi |
+| `POST` | `/api/v1/findings/:id/actions` | Tindakan korektif & unggah bukti setelah perbaikan | Terautentikasi (PIC / Inspektor) |
+| `POST` | `/api/v1/findings/:id/verify` | Verifikasi penutupan temuan | Super Admin, Admin HSSE, Approver |
+| `GET` | `/api/v1/inspection-schedules` | Kalender jadwal & deteksi overdue | Terautentikasi |
+| `POST` | `/api/v1/inspection-schedules`| Penjadwalan inspeksi berkala baru | Super Admin, Admin HSSE |
+| `GET` | `/api/v1/reports/inspections` | Agregasi data laporan, kepatuhan & paginasi | Terautentikasi |
+| `GET` | `/api/v1/users` | Daftar pengguna & peranan | Super Admin, Admin HSSE |
+| `POST` | `/api/v1/users` | Buat pengguna baru | Super Admin |
+| `PATCH`| `/api/v1/users/:id` | Perbarui akun pengguna (proteksi akun Super Admin)| Super Admin |
+| `GET` | `/api/v1/audit-logs` | Jejak audit kepatuhan & aktivitas sistem | Super Admin, Admin HSSE |
+
+---
+
+## 7. Catatan Pemecahan Masalah (Troubleshooting)
+
+1. **Port 3001 Sudah Terpakai (`EADDRINUSE: address already in use :::3001`):**
+   Jika proses Node sebelumnya masih berjalan di background pada Windows:
+   ```powershell
+   Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force
+   ```
+2. **Koneksi Database MySQL Gagal (`ECONNREFUSED 127.0.0.1:3306`):**
+   - Pastikan service MySQL/MariaDB pada WAMPServer dalam status Running (Ikon WAMP hijau).
+   - Pastikan port MySQL di `backend/.env` cocok dengan port WAMPServer (default: `3306`).
+3. **API Tidak Merespons pada Frontend:**
+   - Jalankan pemeriksaan endpoint kesehatan melalui browser atau terminal: `curl http://localhost:3001/health`.
+   - Pastikan variabel `EXPRESS_API_URL=http://localhost:3001/api/v1` pada file `frontend/.env`.
 
 ---
 
 ## 8. Disclaimer Data Demonstrasi
 
 > **Pernyataan Data Contoh:**  
-> Seluruh data yang disajikan di dalam aplikasi ini (meliputi daftar sarfas, nama personil, nomor telepon, catatan inspeksi, foto demonstrasi, dan nomor temuan) merupakan **data contoh (dummy/fixture)** yang dirancang semata-mata untuk kebutuhan pengujian fungsionalitas dan demonstrasi antarmuka mockup aplikasi digitalisasi HSSE. Data tersebut **bukan merupakan catatan resmi rahasia operasional PT Pertamina Patra Niaga**.
+> Seluruh data yang disajikan di dalam aplikasi ini (meliputi inventaris sarfas, nama personil, nomor telepon, catatan inspeksi, foto demonstrasi, dan nomor temuan) merupakan **data contoh (dummy/fixture)** yang dirancang semata-mata untuk kebutuhan pengujian fungsionalitas dan demonstrasi antarmuka mockup aplikasi digitalisasi HSSE. Data tersebut **bukan merupakan catatan resmi rahasia operasional PT Pertamina Patra Niaga**.

@@ -7,6 +7,18 @@
 @section('content')
 <div class="space-y-6">
 
+    @if(!empty($apiError))
+        <div class="p-4 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 flex items-start space-x-3 shadow-xs">
+            <svg class="w-5 h-5 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+            <div class="text-xs">
+                <div class="font-bold text-sm text-amber-950">Gangguan Komunikasi Backend API</div>
+                <p class="mt-0.5 text-amber-800">Layanan data operasional tidak dapat dimuat dari backend Express REST API (Port 3001). Status indikator diatur ke nol untuk mencegah penyajian informasi yang tidak akurat. Silakan periksa status service backend.</p>
+            </div>
+        </div>
+    @endif
+
     <!-- Top Alert Banner: Context Info -->
     <div class="p-4 bg-white border border-slate-200 rounded-xl shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div class="flex items-center space-x-3.5">
